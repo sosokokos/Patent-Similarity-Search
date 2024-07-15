@@ -32,3 +32,19 @@ def scrape_google_patent(patent_number):
     print("Patent Number: " + patent_number)
     print("Description: " + description)
     print("PDF Link: " + pdf_link)
+
+def google_patent_pdf(patent_number):
+    url = f'https://patents.google.com/patent/{patent_number}'
+    response = requests.get(url)
+    
+    if response.status_code != 200:
+        print(f'Failed to retrieve the page. Status code: {response.status_code}')
+        return None
+    
+    soup = BeautifulSoup(response.text, 'html.parser')
+    
+    
+    pdf_link_tag = soup.find('a', string="Download PDF")
+    pdf_link = pdf_link_tag['href'] if pdf_link_tag else 'No PDF link available'
+    
+    return pdf_link
