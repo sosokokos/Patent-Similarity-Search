@@ -160,7 +160,7 @@ def index_text_pinecone(pdf_text, index_name, patent_num):
                 }
             ],
         namespace="ns1")
-        print("Patent: " +patent_obj['title'] + " [" + patent_obj['id'] + "], was successfully inserted into index: [" + index_name + "] insertion - [" + j + "]")
+        print("Patent: " + patent_obj['title'] + " [" + patent_obj['id'] + "], was successfully inserted into index: [" + index_name + "] insertion - [" + str(j) + "]")
         j += 1
 
 def querryDatabase(query, index_name):
@@ -168,7 +168,7 @@ def querryDatabase(query, index_name):
     query_results = index.query(
         namespace="ns1",
         vector=query,
-        top_k=500,
+        top_k=5000,
         include_values=True
         
     )
@@ -194,7 +194,7 @@ def querryDatabaseFiltered(query, index_name, patent_num):
     query_results = index.query(
         namespace="ns1",
         vector=query,
-        top_k=500,
+        top_k=5000,
         include_metadata=True,
         filter={
         "parentID": {"$eq": patent_num}
@@ -254,3 +254,4 @@ def deleteIndex(index_name):
 def listIndexes():
     indexes = pc.list_indexes()
     print("Indexes:", indexes)
+    
