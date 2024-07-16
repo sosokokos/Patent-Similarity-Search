@@ -4,6 +4,13 @@ from openai import OpenAI
 import PyPDF2
 import re
 import os
+import requests
+import pdfplumber
+from io import BytesIO
+
+import fitz
+
+from webScraper import getPatent
 
 #### API KEYS ####
 client = OpenAI(api_key="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")
@@ -36,25 +43,28 @@ def stem_text(text): #NOT Stemming/Lemmatization
     stemmed_text = ' '.join(stemmer.stem(word) for word in words)
     return stemmed_text
 
-def split_text_into_chunks(text, max_tokens):
-    words = text.split()
-    chunks = []
-    current_chunk = []
-    current_tokens = 0
+import openai
+import tiktoken
+import logging
 
-    for word in words:
-        current_tokens += len(word.split())
-        if current_tokens > max_tokens:
-            chunks.append(' '.join(current_chunk))
-            current_chunk = [word]
-            current_tokens = len(word.split())
-        else:
-            current_chunk.append(word)
-    
-    if current_chunk:
-        chunks.append(' '.join(current_chunk))
-    
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+
+# Tokenizer setup
+tokenizer = tiktoken.get_encoding("p50k_base")
+
+def split_text_into_chunks(text, max_tokens=6000):
+    tokens = tokenizer.encode(text)
+    chunks = []
+    for i in range(0, len(tokens), max_tokens):
+        chunk_tokens = tokens[i:i + max_tokens]
+        chunk_text = tokenizer.decode(chunk_tokens)
+        chunks.append(chunk_text)
+    logging.info(f"Created {len(chunks)} chunks")
+    for idx, chunk in enumerate(chunks):
+        logging.info(f"Chunk {idx} length (tokens): {len(tokenizer.encode(chunk))}")
     return chunks
+
 
 #TODO FIX Pre-Processing of data
 def pdf_to_string(pdf_path):
@@ -79,15 +89,8 @@ def pdf_to_string(pdf_path):
     #response = remove_stopwords(cleaned_text)
     return cleaned_text
 
-#TODO Delete one
-### Keyword Counter ###
-def keyword_counter(text, keywords):
-    word_count = {}
-    for keyword in keywords:
-        count = text.lower().split().count(keyword.lower())
-        word_count[keyword] = count
-    return word_count
 
+### Keyword Counter ###
 def keyword_counter(text, keywords):
     word_count = {}
     total_count = 0
@@ -120,10 +123,21 @@ def initializeDatabase(nameInput):
     else:
         print("Index [ " + nameInput + " ] alrady exists")
         return
-    
-def index_pdf_in_pinecone(pdf_text, index_name, id):
+
+#TODO REFORMAT THE for loop with embeddings so it creates nice names
+def index_text_pinecone(pdf_text, index_name, patent_num):
     index = pc.Index(index_name)
-    chunks = split_text_into_chunks(pdf_text, 5000)
+
+    # Clean the string response of excessive whitespace
+    cleaned_text = re.sub(r'\s+', ' ', pdf_text).strip()
+    # Make all the characters lowercase
+    cleaned_text_lower = cleaned_text.lower()
+    # Remove punctuation
+    #cleaned_text = cleaned_text.translate(str.maketrans('', '', string.punctuation))
+    # Remove Stopwords that are stated above
+    #response = remove_stopwords(cleaned_text_lower)
+
+    chunks = split_text_into_chunks(cleaned_text_lower)
     embeddings = []
 
     i = 0
@@ -132,16 +146,65 @@ def index_pdf_in_pinecone(pdf_text, index_name, id):
         print("Chunk #" + str(i) + " created")
         i += 1
 
+    patent_obj = getPatent(patent_num)
+
+    j = 0
     for embedding in embeddings:
-        id = id + "I"
+        id = patent_num + " - [" + str(j) + "]"
         index.upsert(
             vectors=[
-                {"id": id, "values": embedding}
+                {
+                    "id": id,
+                    "values": embedding,
+                    "metadata": {"parentID": patent_num}
+                }
             ],
         namespace="ns1")
-        print("vectorID: [" + id + "], was successfully inserted into index: [" + index_name + "]")
+        print("Patent: " +patent_obj['title'] + " [" + patent_obj['id'] + "], was successfully inserted into index: [" + index_name + "] insertion - [" + j + "]")
+        j += 1
 
 def querryDatabase(query, index_name):
+    index = pc.Index(index_name)
+    query_results = index.query(
+        namespace="ns1",
+        vector=query,
+        top_k=500,
+        include_values=True
+        
+    )
+    
+    filtered_results = [{'id': match['id'], 'score': match['score']} for match in query_results['matches']]
+    return filtered_results
+
+def querryDatabase(query, index_name):
+    index = pc.Index(index_name)
+    query_results = index.query(
+        namespace="ns1",
+        vector=query,
+        top_k=500,
+        include_values=True
+        
+    )
+    
+    filtered_results = [{'id': match['id'], 'score': match['score']} for match in query_results['matches']]
+    return filtered_results
+
+def querryDatabaseFiltered(query, index_name, patent_num):
+    index = pc.Index(index_name)
+    query_results = index.query(
+        namespace="ns1",
+        vector=query,
+        top_k=500,
+        include_metadata=True,
+        filter={
+        "parentID": {"$eq": patent_num}
+        },   
+    )
+    
+    filtered_results = [{'id': match['id'], 'score': match['score']} for match in query_results['matches']]
+    return filtered_results
+
+def querryDatabase2(query, index_name):
     index = pc.Index(index_name)
     query_results = index.query(
         namespace="ns1",
@@ -153,52 +216,41 @@ def querryDatabase(query, index_name):
     filtered_results = [{'id': match['id'], 'score': match['score']} for match in query_results['matches']]
     return filtered_results
 
-def start(): 
-    keywords = ["smoking" , "smoking cessation" ,"smoking alternative", "battery" , "electronic cigarette" , "e-cigarette" , "vaporizer" ,
-                "liquid" , "nicotine substitute" , "nicotine reduction" , "health" , "nicotine" , "device" , "vaporization" , "atomizer" , "quit",
-                "algorithm" , "tracking" , "portable device" , "smart device" , "health improvement" , "health impact" , "usage data", "quit smoking" ,
-                "feedback mechanism", "usage feedback", "data collection", "habit combating", "cartridge chamber", "liquid substance", "oral" ,
-                "nicotine dependence", "coil", "vapor flow rate", "nicotine modulation", "feedback system", "user experience", "non-nicotine liquid"]
+def extract_text_from_pdf_url(url):
+    # Fetch the PDF content from the URL
+    print(f"Fetching PDF from URL: {url}")
+    response = requests.get(url)
+    if response.status_code != 200:
+        print(f"Failed to fetch PDF: {response.status_code}")
+        return ''
     
-    paths = [ "/Users/danielsurina/Desktop/Nuevotine/Data/CN114343254B-ENGLISH.pdf", 
-              "/Users/danielsurina/Desktop/Nuevotine/Data/CN114343255B-ENGLISH.pdf",
-              "/Users/danielsurina/Desktop/Nuevotine/Data/US4715387.pdf",
-              "/Users/danielsurina/Desktop/Nuevotine/Data/US5893371.pdf",
-              "/Users/danielsurina/Desktop/Nuevotine/Data/US10244791.pdf",
-              "/Users/danielsurina/Desktop/Nuevotine/Data/US10251423.pdf",
-              "/Users/danielsurina/Desktop/Nuevotine/Data/US10327479.pdf",
-              "/Users/danielsurina/Desktop/Nuevotine/Data/emptyData.pdf",
-              "/Users/danielsurina/Desktop/Nuevotine/Data/article1.pdf",
-              "/Users/danielsurina/Desktop/Nuevotine/Data/vacuumCleaner.pdf",
-              "/Users/danielsurina/Desktop/Nuevotine/Data/hookah.pdf",
-              "/Users/danielsurina/Desktop/Nuevotine/Data/hairBrush.pdf",
-              "/Users/danielsurina/Desktop/Nuevotine/Data/smokeDetector.pdf",
-              "/Users/danielsurina/Desktop/Nuevotine/Data/particleMonitor.pdf",
-              "/Users/danielsurina/Desktop/Nuevotine/Data/cigaretteTest.pdf"]
-    
-    filenames = [os.path.basename(path) for path in paths]
-    index_name = "test-index"
+    # Open the PDF from the content in memory
+    with pdfplumber.open(BytesIO(response.content)) as pdf:
+        text = ""
+        for page in pdf.pages:
+            extracted_text = page.extract_text()
+            if extracted_text:
+                text += extracted_text
+            else:
+                print(f"Failed to extract text from page: {page.page_number}")
+        print(f"Succesfully extracted text from: " + url)  
+        return text
 
-    #for i in range(len(paths)):
-    #    index_pdf_in_pinecone(pdf_to_string(paths[i]), index_name, filenames[i])
- 
-    userInput_query = " ".join(keywords)
-    query_embedding = get_openai_embeddings(userInput_query.lower())
-    results = querryDatabase(query_embedding, index_name)
+def index_patent_num(index, patent_num):
+    localIndex = index
+    patentObject = getPatent(patent_num)
+    print("Indexing Patent: [" + patentObject["title"]+ "], with ID: " + patentObject["id"])
 
-    print("--------- Similarity Scores ---------")
-    for i in range(len(results)):
-        print("[" + results[i]['id'] + "] Score: " + str(results[i]['score']))
-    
-    print("--------- Keywords ---------")
-    for i in range(len(paths)):
-        meow, num_keywords = keyword_counter(pdf_to_string(paths[i]), keywords)
-        print("[" + filenames[i] + "]: " + str(num_keywords))
+    link = patentObject['url']
+    text = extract_text_from_pdf_url(link)
 
+    index_text_pinecone(text, localIndex, patentObject['id'])
+    print("Patent [" + patentObject['id'] + "] was succesfully inserted")
 
-    #TODO Listing indexes
-    #TODO Deleting indes
-    # Listing  and Deleting of indexes
-    #indexes = pc.list_indexes()
-    #print("Indexes:", indexes)
-    #pc.delete_index("test-index")
+def deleteIndex(index_name):
+    pc.delete_index("test-index")
+    print("Succesfullty Deleted : [" + index_name + "]")
+
+def listIndexes():
+    indexes = pc.list_indexes()
+    print("Indexes:", indexes)
