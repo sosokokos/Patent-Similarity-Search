@@ -3,14 +3,21 @@ from nltk.stem import PorterStemmer
 from openai import OpenAI
 import PyPDF2
 import re
-import os
 import requests
 import pdfplumber
 from io import BytesIO
-
-import fitz
+import csv
+import datetime
 
 from webScraper import getPatent
+
+keywords = ["smoking" , "smoking cessation" ,"smoking alternative", "battery" , "electronic cigarette" , "e-cigarette" , "vaporizer" ,
+                "liquid" , "nicotine substitute" , "nicotine reduction" , "health" , "nicotine" , "device" , "vaporization" , "atomizer" , "quit",
+                "algorithm" , "tracking" , "portable device" , "smart device" , "health improvement" , "health impact" , "usage data", "quit smoking" ,
+                "feedback mechanism", "usage feedback", "data collection", "habit combating", "cartridge chamber", "liquid substance", "oral" ,
+                "nicotine dependence", "coil", "vapor flow rate", "nicotine modulation", "feedback system", "user experience", "non-nicotine liquid"]
+
+index_name = "test-index"
 
 #### API KEYS ####
 client = OpenAI(api_key="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")
@@ -53,7 +60,7 @@ logging.basicConfig(level=logging.INFO)
 # Tokenizer setup
 tokenizer = tiktoken.get_encoding("p50k_base")
 
-def split_text_into_chunks(text, max_tokens=6000):
+def split_text_into_chunks(text, max_tokens=700):
     tokens = tokenizer.encode(text)
     chunks = []
     for i in range(0, len(tokens), max_tokens):
@@ -176,19 +183,6 @@ def querryDatabase(query, index_name):
     filtered_results = [{'id': match['id'], 'score': match['score']} for match in query_results['matches']]
     return filtered_results
 
-def querryDatabase(query, index_name):
-    index = pc.Index(index_name)
-    query_results = index.query(
-        namespace="ns1",
-        vector=query,
-        top_k=500,
-        include_values=True
-        
-    )
-    
-    filtered_results = [{'id': match['id'], 'score': match['score']} for match in query_results['matches']]
-    return filtered_results
-
 def querryDatabaseFiltered(query, index_name, patent_num):
     index = pc.Index(index_name)
     query_results = index.query(
@@ -204,21 +198,9 @@ def querryDatabaseFiltered(query, index_name, patent_num):
     filtered_results = [{'id': match['id'], 'score': match['score']} for match in query_results['matches']]
     return filtered_results
 
-def querryDatabase2(query, index_name):
-    index = pc.Index(index_name)
-    query_results = index.query(
-        namespace="ns1",
-        vector=query,
-        top_k=500,
-        include_values=True
-    )
-    
-    filtered_results = [{'id': match['id'], 'score': match['score']} for match in query_results['matches']]
-    return filtered_results
-
 def extract_text_from_pdf_url(url):
     # Fetch the PDF content from the URL
-    print(f"Fetching PDF from URL: {url}")
+    #print(f"Fetching PDF from URL: {url}")
     response = requests.get(url)
     if response.status_code != 200:
         print(f"Failed to fetch PDF: {response.status_code}")
@@ -233,7 +215,7 @@ def extract_text_from_pdf_url(url):
                 text += extracted_text
             else:
                 print(f"Failed to extract text from page: {page.page_number}")
-        print(f"Succesfully extracted text from: " + url)  
+        #print(f"Succesfully extracted text from: " + url)  
         return text
 
 def index_patent_num(index, patent_num):
@@ -255,3 +237,140 @@ def listIndexes():
     indexes = pc.list_indexes()
     print("Indexes:", indexes)
     
+
+def querrySummary():
+    userInput_query = " ".join(keywords)
+    query_embedding = get_openai_embeddings(userInput_query.lower())
+    results = querryDatabase(query_embedding, index_name)
+
+    print("--------- Similarity Scores ---------")
+    for i in range(len(results)):
+        print("[" + results[i]['id'] + "] Score: " + str(results[i]['score']))
+
+def patentQuerrySummary(patent_num):
+    userInput_query = " ".join(keywords)
+    query_embedding = get_openai_embeddings(userInput_query.lower())
+    results = querryDatabaseFiltered(query_embedding, index_name, patent_num)
+
+    #print("--------- Similarity Scores ---------")
+    #for i in range(len(results)):
+    #    print("[" + results[i]['id'] + "] Score: " + str(results[i]['score']))
+    return results
+
+def querryResponse(patentArray):
+    userInput_query = " ".join(keywords)
+    query_embedding = get_openai_embeddings(userInput_query.lower())
+
+    results = []
+
+    for i in range(len(patentArray)):
+        results[i] = querryDatabaseFiltered(query_embedding, index_name, patentArray[i])
+
+    print("--------- Similarity Scores ---------")
+    for i in range(len(results)):
+        print("[" + results[i]['id'] + "] Score: " + str(results[i]['score']))
+
+def calculateAverage(input):
+    if len(input) <= 0:
+        print("CALCULATE AVERAGE IS BITCHING WE'RE DIVIDING BY: " + str(len(input)))
+        print(input)
+        return 0
+
+    accumulator = 0
+    for i in range(len(input)):
+        accumulator += input[i]['score']
+    return accumulator / len(input)
+
+def calculateMin(response):
+    currentMin = response[0]['score']
+    for i in range(len(response)):
+        if(response[i]['score'] < currentMin):
+            currentMin = response[i]['score']
+    return currentMin
+    
+def calculateMax(response):
+    currentMax = response[0]['score']
+    for i in range(len(response)):
+        if(response[i]['score'] > currentMax):
+            currentMax = response[i]['score']
+    return currentMax
+
+def generateFormattedResponses(patents):
+    responseData = []
+    for i in range(len(patents)):
+        response = patentQuerrySummary(patents[i])
+        if len(response) < 1:
+            resultERROR = {
+                "id": patents[i],
+                "title": patentObj['title'],
+                "average": 1,
+                "min": 1,
+                "max": 1,
+                "description": "THIS IS AN INVALID OBJECT BECAUSE OF A DIVISION BY 0, check the validity and go fuck yourself",
+                "link": "NO URL HERE BROTHA"
+            }
+            return resultERROR
+
+        average = calculateAverage(response)
+        min = calculateMin(response)
+        max = calculateMax(response)
+        patentObj = getPatent(patents[i])
+
+        result = {
+            "id": patents[i],
+            "title": patentObj['title'],
+            "average": average,
+            "min": min,
+            "max": max,
+            "description": patentObj['description'],
+            "link": patentObj['url']
+        }
+        responseData.append(result)
+    return responseData
+
+def printResults(patents):
+    responses = generateFormattedResponses(patents)
+    current_timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    filename="patent_results_" + str(current_timestamp) + ".csv"
+
+    # Ensure responses is a list
+    if isinstance(responses, dict):
+        responses = [responses]
+
+    sorted_responses = sorted(responses, key=lambda x: x['average'])
+
+    with open(filename, mode='w', newline='') as file:
+        writer = csv.writer(file)
+        writer.writerow(["Patent ID", "Title", "Average", "Min", "Max", "Keyword's count", "Link", "Description"])
+
+        for response in sorted_responses:
+            word_count, total_count = keyword_counter(extract_text_from_pdf_url(response['link']), keywords)
+            writer.writerow([
+                response['id'],
+                response['title'],
+                response['average'],
+                response['min'],
+                response['max'],
+                total_count,
+                response['link'],
+                response['description']
+            ])
+
+    print(f"Results have been written to {filename}")
+    
+    for i in range(len(sorted_responses)):
+        word_count, total_count = keyword_counter(extract_text_from_pdf_url(sorted_responses[i]['link']), keywords)
+        print("------------RESPONSE [" + str(i) + "]------------")
+        print("Patent ID: [" + sorted_responses[i]['id'] + "]")
+        print("Title: " + sorted_responses[i]['title'])
+        print("Average: " + str(sorted_responses[i]['average']))
+        print("Min: " + str(sorted_responses[i]['min']))
+        print("Max: " + str(sorted_responses[i]['max']))
+        print("Keyword's count: " + str(total_count))
+        print("link: " + sorted_responses[i]['link'])
+        print("Description: " + sorted_responses[i]['description'])
+        
+    
+def indexPatentsBulk(patents_list):
+    for i in range(len(patents_list)):
+       index_patent_num(index_name, patents_list[i])
