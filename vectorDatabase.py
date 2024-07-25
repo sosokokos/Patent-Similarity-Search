@@ -8,6 +8,9 @@ import pdfplumber
 from io import BytesIO
 import csv
 import datetime
+from transformers import BertTokenizer, BertModel
+import torch
+from sentence_transformers import SentenceTransformer
 
 from webScraper import getPatent
 
@@ -120,7 +123,7 @@ def initializeDatabase(nameInput):
     if nameInput not in pc.list_indexes().names():
         pc.create_index(
         name=nameInput, 
-        dimension=1536,  # Adjusted to match embedding dimensions
+        dimension=384,  # Adjusted to match embedding dimensions
         metric='euclidean',
         spec=ServerlessSpec(
             cloud='aws',
@@ -131,7 +134,7 @@ def initializeDatabase(nameInput):
         print("Index [ " + nameInput + " ] alrady exists")
         return
 
-#TODO REFORMAT THE for loop with embeddings so it creates nice names
+
 def index_text_pinecone(pdf_text, index_name, patent_num):
     index = pc.Index(index_name)
 
@@ -247,7 +250,7 @@ def querrySummary():
     for i in range(len(results)):
         print("[" + results[i]['id'] + "] Score: " + str(results[i]['score']))
 
-def patentQuerrySummary(patent_num):
+def patentQuerrySummary2(patent_num):
     userInput_query = " ".join(keywords)
     query_embedding = get_openai_embeddings(userInput_query.lower())
     results = querryDatabaseFiltered(query_embedding, index_name, patent_num)
@@ -256,7 +259,7 @@ def patentQuerrySummary(patent_num):
     #for i in range(len(results)):
     #    print("[" + results[i]['id'] + "] Score: " + str(results[i]['score']))
     return results
-
+#TODO here
 def querryResponse(patentArray):
     userInput_query = " ".join(keywords)
     query_embedding = get_openai_embeddings(userInput_query.lower())
@@ -337,7 +340,7 @@ def printResults(patents):
     if isinstance(responses, dict):
         responses = [responses]
 
-    sorted_responses = sorted(responses, key=lambda x: x['average'])
+    sorted_responses = sorted(responses, key=lambda x: x['min'])
 
     with open(filename, mode='w', newline='') as file:
         writer = csv.writer(file)
@@ -374,3 +377,97 @@ def printResults(patents):
 def indexPatentsBulk(patents_list):
     for i in range(len(patents_list)):
        index_patent_num(index_name, patents_list[i])
+
+def tester9(patent_num):
+    patent_data = getPatent(patent_num)
+    url = patent_data.get('url')
+    
+    if not url:
+        print("No URL provided in the patent data [" + patent_num + "]")
+        return 1
+        
+    return 0
+
+
+def tester(patent_num):
+    
+    index = pc.Index("test-index")
+    
+    if tester9(patent_num):
+        return 0
+    
+    pdf_text = extract_text_from_pdf_url(getPatent(patent_num)['url'])
+    # Load pre-trained SentenceTransformer model
+    model = SentenceTransformer('all-MiniLM-L6-v2')  # Smaller and faster model
+
+    # Split the text into larger chunks (e.g., paragraphs or fixed-size chunks)
+    chunk_size = 1000  # Number of characters per chunk
+    chunks = [pdf_text[i:i + chunk_size] for i in range(0, len(pdf_text), chunk_size)]
+    
+
+    # Function to get embeddings for text chunks
+    def get_embeddings(chunks):
+        embeddings = model.encode(chunks, convert_to_tensor=True)
+        return embeddings
+
+    # Get embeddings for text chunks
+    chunk_embeddings = get_embeddings(chunks)
+
+    j = 0
+    for embedding in chunk_embeddings:
+        id = patent_num + " - [" + str(j) + "]"
+        index.upsert(
+            vectors=[
+                {
+                    "id": id,
+                    "values": embedding,
+                    "metadata": {"parentID": patent_num}
+                }
+            ],
+        namespace="ns1")
+        #print("Patent: " + patent_obj['title'] + " [" + patent_obj['id'] + "], was successfully inserted into index: [" + index_name + "] insertion - [" + str(j) + "]")
+        j += 1
+    print("Patent [" + patent_num + "] succesfully inserted into the database")
+
+def tester2():
+    index = pc.Index("test-index")
+    
+    model = SentenceTransformer('all-MiniLM-L6-v2')  # Smaller and faster model
+    
+    keywords_string = " ".join(keywords)
+
+    # Function to get embeddings for text chunks
+    def get_embeddings(chunks):
+        embeddings = model.encode(chunks, convert_to_tensor=True)
+        return embeddings
+
+    # Get embeddings for text chunks
+    chunk_embeddings = get_embeddings(keywords_string)
+
+   
+    chunk_list = chunk_embeddings.tolist()
+
+    
+
+    query_results = index.query(
+        namespace="ns1",
+        vector=[chunk_list],
+        top_k=5000,
+    )
+    print("PRINTING RESULTS")
+    print(query_results)
+
+def get_MiniLM_embeddings(query):
+    model = SentenceTransformer('all-MiniLM-L6-v2')  # Smaller and faster model
+    chunk_size = 1000  # Number of characters per chunk
+    chunks = [query[i:i + chunk_size] for i in range(0, len(query), chunk_size)]
+    embeddings = model.encode(chunks, convert_to_tensor=True)
+    return embeddings.tolist()
+    
+
+def patentQuerrySummary(patent_num):
+    userInput_query = " ".join(keywords)
+    query_embedding = get_MiniLM_embeddings(userInput_query.lower())
+    results = querryDatabaseFiltered(query_embedding, index_name, patent_num)
+    return results
+    
