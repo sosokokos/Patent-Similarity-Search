@@ -21,8 +21,6 @@ def main():
     deleteIndex("test-index")
     initializeDatabase("test-index")
 
-    for patent in patents:
-        tester(patent)
 
     printResults(patents)
     
