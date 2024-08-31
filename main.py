@@ -18,17 +18,13 @@ keywords = ["smoking" , "smoking cessation" ,"smoking alternative", "battery" , 
 
 
 def main():
-    deleteIndex("working-index")
-    initializeDatabase("working-index")
-    upsert_patents_bulk("working-index","test-batch", patents)
+    #deleteIndex("working-index")
+    #initializeDatabase("working-index")
+    #upsert_patents_bulk("working-index","test-batch", tester)
+    
+    
 
-    #upsert_patents_bulk("working-index","keeper-batch", tester)
-    #deleteNamespace("working-index","keeper-batch")
-    userInput_query = " ".join(keywords)
-    query_embedding = get_MiniLM_embeddings(userInput_query.lower())
-    
-    
-    print(querryDatabase(query_embedding, "working-index", "test-batch"))
+    printResults("working-index", "test-batch")
     #printResults(patents)
 
 

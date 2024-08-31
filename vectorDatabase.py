@@ -49,12 +49,18 @@ def listIndexes():
     indexes = pc.list_indexes()
     print("Indexes:", indexes)
 
-#TODO REMOVE IF NOT USED
-def querryDatabaseFiltered(query, index_name, patent_num):
+def patentQuerrySummary(index_name, namespace, patent_num):
+    index_name = "working-index"
+    userInput_query = " ".join(keywords)
+    query_embedding = get_MiniLM_embeddings(userInput_query.lower())
+    results = querryDatabaseFiltered(index_name, namespace, query_embedding, patent_num)
+    return results
+
+def querryDatabaseFiltered(index_name, namespace, query_embedding, patent_num):
      index = pc.Index(index_name)
      query_results = index.query(
-         namespace="ns1",
-         vector=query,
+         namespace=namespace,
+         vector=query_embedding,
          top_k=5000,
          include_metadata=True,
          filter={
@@ -111,6 +117,15 @@ def upsert_patents_bulk(index, namespace, patent_num_array):
         j += 1
     print("[" + str(j) + "/" + str(arrLen) + "] patents succesfully inserted into Index: " + index + " | Namespace: " + namespace)
 
+def findPatentIDs(input_index, namespace):
+    index = pc.Index(input_index)
+    response = []
+    for ids in index.list(namespace=namespace):
+        for id_str in ids:
+            filteredID = id_str.replace(" - [0]", "")
+            response.append(filteredID)
+    return response
+
 
 ### Model ### 
 def get_MiniLM_embeddings(query):
@@ -119,7 +134,6 @@ def get_MiniLM_embeddings(query):
     chunks = [query[i:i + chunk_size] for i in range(0, len(query), chunk_size)]
     embeddings = model.encode(chunks, convert_to_tensor=True)
     return embeddings.tolist()
-
 
 
 ### Keyword Counter and Helper functions ###
@@ -165,10 +179,31 @@ def testInvalidURL(patent_num):
         return 1 
     return 0
 
+def extract_text_from_pdf_url(url):
+    # Fetch the PDF content from the URL
+    #print(f"Fetching PDF from URL: {url}")
+    response = requests.get(url)
+    if response.status_code != 200:
+        print(f"Failed to fetch PDF: {response.status_code}")
+        return ''
+    
+    # Open the PDF from the content in memory
+    with pdfplumber.open(BytesIO(response.content)) as pdf:
+        text = ""
+        for page in pdf.pages:
+            extracted_text = page.extract_text()
+            if extracted_text:
+                text += extracted_text
+            else:
+                print(f"Failed to extract text from page: {page.page_number}")
+        #print(f"Succesfully extracted text from: " + url)  
+        return text
+
 
 ### Response and CSV ###
-def printResults(patents):
-    responses = generateFormattedResponses(patents)
+def printResults(index, namespace):
+    patents = findPatentIDs(index, namespace)
+    responses = compute_scores(index, namespace, patents)
     current_timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     filename="patent_results_" + str(current_timestamp) + ".csv"
 
@@ -208,11 +243,11 @@ def printResults(patents):
         print("Keyword's count: " + str(total_count))
         print("link: " + sorted_responses[i]['link'])
         print("Description: " + sorted_responses[i]['description'])
-    
-def generateFormattedResponses(patents):
+
+def compute_scores(index_name,namespace,patents):
     responseData = []
     for i in range(len(patents)):
-        response = patentQuerrySummary(patents[i])
+        response = patentQuerrySummary(index_name, namespace, patents[i])
         if len(response) < 1:
             resultERROR = {
                 "id": patents[i],
@@ -220,8 +255,8 @@ def generateFormattedResponses(patents):
                 "average": 1,
                 "min": 1,
                 "max": 1,
-                "description": "THIS IS AN INVALID OBJECT BECAUSE OF A DIVISION BY 0, check the validity and go fuck yourself",
-                "link": "NO URL HERE BROTHA"
+                "description": "THIS IS AN INVALID OBJECT BECAUSE OF A DIVISION BY 0, check the validity",
+                "link": "NO----URL"
             }
             print(resultERROR)
             continue
@@ -243,29 +278,36 @@ def generateFormattedResponses(patents):
         responseData.append(result)
     return responseData
 
-def extract_text_from_pdf_url(url):
-    # Fetch the PDF content from the URL
-    #print(f"Fetching PDF from URL: {url}")
-    response = requests.get(url)
-    if response.status_code != 200:
-        print(f"Failed to fetch PDF: {response.status_code}")
-        return ''
-    
-    # Open the PDF from the content in memory
-    with pdfplumber.open(BytesIO(response.content)) as pdf:
-        text = ""
-        for page in pdf.pages:
-            extracted_text = page.extract_text()
-            if extracted_text:
-                text += extracted_text
-            else:
-                print(f"Failed to extract text from page: {page.page_number}")
-        #print(f"Succesfully extracted text from: " + url)  
-        return text
-    
-def patentQuerrySummary(patent_num):
-    index_name = "working-index"
-    userInput_query = " ".join(keywords)
-    query_embedding = get_MiniLM_embeddings(userInput_query.lower())
-    results = querryDatabaseFiltered(query_embedding, index_name, patent_num)
-    return results
+def compute_scores_fast(index_name,namespace,patents):
+    responseData = []
+    for i in range(len(patents)):
+        response = patentQuerrySummary(index_name, namespace, patents[i])
+        if len(response) < 1:
+            resultERROR = {
+                "id": patents[i],
+                "title": patentObj['title'],
+                "average": 1,
+                "min": 1,
+                "max": 1,
+                "description": "THIS IS AN INVALID OBJECT BECAUSE OF A DIVISION BY 0, check the validity",
+                "link": "NO----URL"
+            }
+            print(resultERROR)
+            continue
+
+        average = calculateAverage(response)
+        min = calculateMin(response)
+        max = calculateMax(response)
+        patentObj = getPatent(patents[i])
+
+        result = {
+            "id": patents[i],
+            "title": patentObj['title'],
+            "average": average,
+            "min": min,
+            "max": max,
+            "description": patentObj['description'],
+            "link": patentObj['url']
+        }
+        responseData.append(result)
+    return responseData
