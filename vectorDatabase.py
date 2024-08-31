@@ -44,13 +44,13 @@ def deleteIndex(index_name):
 def deleteNamespace(index_name, namespace):
     index = pc.Index(index_name)
     index.delete(namespace=namespace, delete_all=True)
+    print("Namespace : [" + namespace + "], succesfully cleared")
 
 def listIndexes():
     indexes = pc.list_indexes()
     print("Indexes:", indexes)
 
 def patentQuerrySummary(index_name, namespace, patent_num):
-    index_name = "working-index"
     userInput_query = " ".join(keywords)
     query_embedding = get_MiniLM_embeddings(userInput_query.lower())
     results = querryDatabaseFiltered(index_name, namespace, query_embedding, patent_num)
@@ -81,23 +81,24 @@ def querryDatabase(query, index_name, namespace):
      )
      return query_results
 
-def upsert_patent(index, namespace, patent_num):
+def upsert_patent(index_name, namespace, patent_num):
     if testInvalidURL(patent_num):
         return 0
     
-    indexObj = pc.Index(index)
+    index = pc.Index(index_name)
     
     patent_text = extract_text_from_pdf_url(getPatent(patent_num)['url'])
 
-    chunk_size = 1000  # Number of characters per chunk
-    chunks = [patent_text[i:i + chunk_size] for i in range(0, len(patent_text), chunk_size)]
-
-    chunk_embeddings = get_MiniLM_embeddings(chunks)
-
+    print("Inserting Patent : " + patent_num)
+   
+    chunk_embeddings = get_MiniLM_embeddings(patent_text)
+   
+    print("Embeddings : " + str(len(chunk_embeddings)))
     i = 0
     for embedding in chunk_embeddings:
         id = patent_num + " - [" + str(i) + "]"
-        indexObj.upsert(
+        print("Upserting : " + id)
+        index.upsert(
             vectors=[
                 {
                     "id": id,
@@ -112,12 +113,12 @@ def upsert_patent(index, namespace, patent_num):
 def upsert_patents_bulk(index, namespace, patent_num_array):
     j = 0
     arrLen = len(patent_num_array)
-    for i in range(0, arrLen):
-        upsert_patent(index, namespace, patent_num_array[i])
+    for patent in patent_num_array:
+        upsert_patent(index, namespace, patent)
         j += 1
     print("[" + str(j) + "/" + str(arrLen) + "] patents succesfully inserted into Index: " + index + " | Namespace: " + namespace)
 
-def findPatentIDs(input_index, namespace):
+def findPatentIDs2(input_index, namespace):
     index = pc.Index(input_index)
     response = []
     for ids in index.list(namespace=namespace):
@@ -126,11 +127,19 @@ def findPatentIDs(input_index, namespace):
             response.append(filteredID)
     return response
 
+def findPatentIDs(input_index, namespace):
+    index = pc.Index(input_index)
+    response = set()  # Use a set to ensure unique patent IDs
+    for ids in index.list(namespace=namespace):
+        for id_str in ids:
+            filteredID = id_str.split(" - [")[0]  # Remove the suffix starting from " - ["
+            response.add(filteredID)  # Add the filtered ID to the set
+    return list(response)
 
 ### Model ### 
 def get_MiniLM_embeddings(query):
     model = SentenceTransformer('all-MiniLM-L6-v2')  # Smaller and faster model
-    chunk_size = 1000  # Number of characters per chunk
+    chunk_size = 6000  # Number of characters per chunk
     chunks = [query[i:i + chunk_size] for i in range(0, len(query), chunk_size)]
     embeddings = model.encode(chunks, convert_to_tensor=True)
     return embeddings.tolist()
@@ -248,6 +257,7 @@ def compute_scores(index_name,namespace,patents):
     responseData = []
     for i in range(len(patents)):
         response = patentQuerrySummary(index_name, namespace, patents[i])
+        patentObj = getPatent(patents[i])
         if len(response) < 1:
             resultERROR = {
                 "id": patents[i],
@@ -264,7 +274,7 @@ def compute_scores(index_name,namespace,patents):
         average = calculateAverage(response)
         min = calculateMin(response)
         max = calculateMax(response)
-        patentObj = getPatent(patents[i])
+        word_count, total_count = keyword_counter(extract_text_from_pdf_url(patentObj['url']), keywords)
 
         result = {
             "id": patents[i],
@@ -272,42 +282,44 @@ def compute_scores(index_name,namespace,patents):
             "average": average,
             "min": min,
             "max": max,
+            "keywords": total_count,
             "description": patentObj['description'],
             "link": patentObj['url']
         }
+
         responseData.append(result)
     return responseData
 
-def compute_scores_fast(index_name,namespace,patents):
-    responseData = []
-    for i in range(len(patents)):
-        response = patentQuerrySummary(index_name, namespace, patents[i])
-        if len(response) < 1:
-            resultERROR = {
-                "id": patents[i],
-                "title": patentObj['title'],
-                "average": 1,
-                "min": 1,
-                "max": 1,
-                "description": "THIS IS AN INVALID OBJECT BECAUSE OF A DIVISION BY 0, check the validity",
-                "link": "NO----URL"
-            }
-            print(resultERROR)
-            continue
 
-        average = calculateAverage(response)
-        min = calculateMin(response)
-        max = calculateMax(response)
-        patentObj = getPatent(patents[i])
+def filter_test_batch(index_name="working-index", namespace="test-batch", destination_index = "storage-index", destination_namespace_pass = "target-patents", destination_namespace_fail = "tested-insufficent"):
+    patents = findPatentIDs(index_name, namespace)
+    responses = compute_scores(index_name, namespace, patents)
 
-        result = {
-            "id": patents[i],
-            "title": patentObj['title'],
-            "average": average,
-            "min": min,
-            "max": max,
-            "description": patentObj['description'],
-            "link": patentObj['url']
-        }
-        responseData.append(result)
-    return responseData
+    target_list = findPatentIDs(destination_index, destination_namespace_pass)
+    fail_list =  findPatentIDs(destination_index, destination_namespace_fail)
+
+    storage_lists = target_list + fail_list 
+    hitResponses = []
+
+    for response in responses:
+        if response["id"] not in storage_lists: 
+            if response["min"] <= 1.2 and response["keywords"] >= 25:
+                upsert_patent(destination_index, destination_namespace_pass, response["id"])
+                print( "[" + response["id"] + "] PASSED [Keywords:" + str(response["keywords"]) + " | MinScore: " + str(response["min"]) + "], Storing in " + destination_index + "/" + destination_namespace_pass)
+                hitResponses.append(response["id"])
+            else:
+                upsert_patent(destination_index,destination_namespace_fail, response["id"])
+                print("[" + response["id"] + "] FAILED [Keywords:" + str(response["keywords"]) + " | MinScore: " + str(response["min"]) + "], Storing in " + destination_index + "/" + destination_namespace_fail)
+        else:
+            print("[" + response["id"] + "] Already exists in cloud, skipping.")
+
+    deleteNamespace(index_name, namespace)
+
+    similarPatentResponses = []
+
+    for hit in hitResponses:
+        simPatents = get_similar_patents(hit)
+        for pat in simPatents:
+            similarPatentResponses.append(pat)
+
+    return similarPatentResponses
