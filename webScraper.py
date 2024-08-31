@@ -36,10 +36,8 @@ def getPatent(patent_number):
 
     return response
 
-import requests
-from bs4 import BeautifulSoup
 
-def get_patent_numbers(patent_id):
+def get_similar_patents(patent_id):
     url = f"https://patents.google.com/patent/{patent_id}/similar"
     response = requests.get(url)
     soup = BeautifulSoup(response.text, 'html.parser')
@@ -48,9 +46,7 @@ def get_patent_numbers(patent_id):
     for link in soup.find_all('a', href=True):
         if link['href'].startswith('/patent/'):
             patent_number = link['href'].split('/')[2]
-            if patent_number not in patent_numbers:
+            if patent_number.startswith('US') and patent_number not in patent_numbers:
                 patent_numbers.append(patent_number)
     
     return patent_numbers
-
-#
