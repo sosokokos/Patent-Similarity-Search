@@ -7,7 +7,7 @@ import csv
 import datetime
 
 
-from webScraper import getPatent
+from webScraper import getPatent, get_similar_patents
 
 keywords = ["smoking" , "smoking cessation" ,"smoking alternative", "battery" , "electronic cigarette" , "e-cigarette" , "vaporizer" ,
                 "liquid" , "nicotine substitute" , "nicotine reduction" , "health" , "nicotine" , "device" , "vaporization" , "atomizer" , "quit",
@@ -20,6 +20,7 @@ index_name = "test-index"
 #### API KEYS ####
 pc = Pinecone(api_key="639f6487-bd60-453c-b0f4-24f1537a1c2f")
 
+
 #### Pinecone ####
 def initializeDatabase(nameInput):
     if nameInput not in pc.list_indexes().names():
@@ -31,19 +32,24 @@ def initializeDatabase(nameInput):
             cloud='aws',
             region='us-east-1'
         ))
-        print("Vector database initialized")
+        print("Succesfully Initialized : [" + nameInput + "]")
     else:
-        print("Index [ " + nameInput + " ] alrady exists")
+        print("Unsuccesfully Initialized : [ " + nameInput + " ] -> Index alrady exists, choose a different name")
         return
 
 def deleteIndex(index_name):
-    pc.delete_index("test-index")
+    pc.delete_index(index_name)
     print("Succesfullty Deleted : [" + index_name + "]")
+
+def deleteNamespace(index_name, namespace):
+    index = pc.Index(index_name)
+    index.delete(namespace=namespace, delete_all=True)
 
 def listIndexes():
     indexes = pc.list_indexes()
     print("Indexes:", indexes)
 
+#TODO REMOVE IF NOT USED
 def querryDatabaseFiltered(query, index_name, patent_num):
      index = pc.Index(index_name)
      query_results = index.query(
@@ -59,6 +65,63 @@ def querryDatabaseFiltered(query, index_name, patent_num):
      filtered_results = [{'id': match['id'], 'score': match['score']} for match in query_results['matches']]
      return filtered_results
 
+def querryDatabase(query, index_name, namespace):
+     index = pc.Index(index_name)
+     query_results = index.query(
+         namespace=namespace,
+         vector=query,
+         top_k=5000,
+         include_metadata=True,  
+     )
+     return query_results
+
+def upsert_patent(index, namespace, patent_num):
+    if testInvalidURL(patent_num):
+        return 0
+    
+    indexObj = pc.Index(index)
+    
+    patent_text = extract_text_from_pdf_url(getPatent(patent_num)['url'])
+
+    chunk_size = 1000  # Number of characters per chunk
+    chunks = [patent_text[i:i + chunk_size] for i in range(0, len(patent_text), chunk_size)]
+
+    chunk_embeddings = get_MiniLM_embeddings(chunks)
+
+    i = 0
+    for embedding in chunk_embeddings:
+        id = patent_num + " - [" + str(i) + "]"
+        indexObj.upsert(
+            vectors=[
+                {
+                    "id": id,
+                    "values": embedding,
+                    "metadata": {"parentID": patent_num}
+                }
+            ],
+        namespace=namespace)
+        i += 1
+    print("Patent [" + patent_num + "] succesfully inserted into the database")
+
+def upsert_patents_bulk(index, namespace, patent_num_array):
+    j = 0
+    arrLen = len(patent_num_array)
+    for i in range(0, arrLen):
+        upsert_patent(index, namespace, patent_num_array[i])
+        j += 1
+    print("[" + str(j) + "/" + str(arrLen) + "] patents succesfully inserted into Index: " + index + " | Namespace: " + namespace)
+
+
+### Model ### 
+def get_MiniLM_embeddings(query):
+    model = SentenceTransformer('all-MiniLM-L6-v2')  # Smaller and faster model
+    chunk_size = 1000  # Number of characters per chunk
+    chunks = [query[i:i + chunk_size] for i in range(0, len(query), chunk_size)]
+    embeddings = model.encode(chunks, convert_to_tensor=True)
+    return embeddings.tolist()
+
+
+
 ### Keyword Counter and Helper functions ###
 def keyword_counter(text, keywords):
     word_count = {}
@@ -68,8 +131,8 @@ def keyword_counter(text, keywords):
         word_count[keyword] = count
         total_count += count
     return word_count, total_count
-    
-def calculateAverage(input):
+
+def calculateAverage(input): #TODO Fix this
     if len(input) <= 0:
         print("CALCULATE AVERAGE IS BITCHING WE'RE DIVIDING BY: " + str(len(input)))
         print(input)
@@ -201,63 +264,8 @@ def extract_text_from_pdf_url(url):
         return text
     
 def patentQuerrySummary(patent_num):
+    index_name = "working-index"
     userInput_query = " ".join(keywords)
     query_embedding = get_MiniLM_embeddings(userInput_query.lower())
     results = querryDatabaseFiltered(query_embedding, index_name, patent_num)
     return results
-
-def get_MiniLM_embeddings(query):
-    model = SentenceTransformer('all-MiniLM-L6-v2')  # Smaller and faster model
-    chunk_size = 1000  # Number of characters per chunk
-    chunks = [query[i:i + chunk_size] for i in range(0, len(query), chunk_size)]
-    embeddings = model.encode(chunks, convert_to_tensor=True)
-    return embeddings.tolist()
-
-
-
-
-
-
-
-
-def tester(patent_num):
-    
-    index = pc.Index("test-index")
-    
-    if testInvalidURL(patent_num):
-        return 0
-    
-    pdf_text = extract_text_from_pdf_url(getPatent(patent_num)['url'])
-    # Load pre-trained SentenceTransformer model
-    model = SentenceTransformer('all-MiniLM-L6-v2')  # Smaller and faster model
-
-
-    #TODO Make into function chunk_text(text) -> list[str]
-    # Split the text into larger chunks (e.g., paragraphs or fixed-size chunks)
-    chunk_size = 1000  # Number of characters per chunk
-    chunks = [pdf_text[i:i + chunk_size] for i in range(0, len(pdf_text), chunk_size)]
-    
-
-    # Function to get embeddings for text chunks
-    def get_embeddings(chunks):
-        embeddings = model.encode(chunks, convert_to_tensor=True)
-        return embeddings
-
-    # Get embeddings for text chunks
-    chunk_embeddings = get_embeddings(chunks)
-
-    j = 0
-    for embedding in chunk_embeddings:
-        id = patent_num + " - [" + str(j) + "]"
-        index.upsert(
-            vectors=[
-                {
-                    "id": id,
-                    "values": embedding,
-                    "metadata": {"parentID": patent_num}
-                }
-            ],
-        namespace="ns1")
-        #print("Patent: " + patent_obj['title'] + " [" + patent_obj['id'] + "], was successfully inserted into index: [" + index_name + "] insertion - [" + str(j) + "]")
-        j += 1
-    print("Patent [" + patent_num + "] succesfully inserted into the database")

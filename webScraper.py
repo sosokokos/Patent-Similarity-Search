@@ -1,5 +1,6 @@
-import requests
 from bs4 import BeautifulSoup
+import requests
+
 
 def getPatent(patent_number):
     url = f'https://patents.google.com/patent/{patent_number}'
