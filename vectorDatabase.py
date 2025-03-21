@@ -18,7 +18,7 @@ keywords = ["smoking" , "smoking cessation" ,"smoking alternative", "battery" , 
 index_name = "test-index"
 
 #### API KEYS ####
-pc = Pinecone(api_key="639f6487-bd60-453c-b0f4-24f1537a1c2f")
+pc = Pinecone(api_key="Key")
 
 
 #### Pinecone ####
